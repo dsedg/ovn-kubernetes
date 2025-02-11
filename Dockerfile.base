@@ -39,8 +39,8 @@ RUN mkdir -p /var/run/openvswitch && \
     mkdir -p /root/windows/
 
 # copy git commit number into image
-COPY .git/HEAD /root/.git/HEAD
-COPY .git/refs/heads/ /root/.git/refs/heads/
+COPY ../.git/modules/ovn-kubernetes/HEAD /root/.git/HEAD
+COPY ../.git/modules/ovn-kubernetes/refs/heads/ /root/.git/refs/heads/
 
 # ovnkube.sh is the entry point. This script examines environment
 # variables to direct operation and configure ovn
