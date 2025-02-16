@@ -17,6 +17,11 @@ FROM registry.ci.openshift.org/openshift/release:rhel-9-release-golang-1.22-open
 WORKDIR /go/src/github.com/openshift/ovn-kubernetes
 COPY . .
 
+# Changes to getting working with submodules 
+RUN rm .git
+COPY gitinfo /go/src/github.com/openshift/ovn-kubernetes/.git
+RUN  sed -i '/worktree/d' gitinfo/config
+
 # build the binaries
 RUN cd go-controller; CGO_ENABLED=0 make
 
