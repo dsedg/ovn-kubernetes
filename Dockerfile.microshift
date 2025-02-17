@@ -25,11 +25,7 @@ RUN  sed -i '/worktree/d' .git/config
 # build the binaries
 RUN cd go-controller; CGO_ENABLED=0 make
 
-<<<<<<< HEAD
 FROM ghcr.io/dsedg/ovn-kubernetes-base:latest
-=======
-FROM registry.ci.openshift.org/ocp/4.19:ovn-kubernetes-base
->>>>>>> upstream/master
 
 USER root
 
