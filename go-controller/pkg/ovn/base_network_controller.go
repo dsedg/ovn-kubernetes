@@ -12,6 +12,18 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	kapi "k8s.io/api/core/v1"
+	knet "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/util/sets"
+	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	ref "k8s.io/client-go/tools/reference"
+	"k8s.io/klog/v2"
+	utilnet "k8s.io/utils/net"
+
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/pod"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -32,18 +44,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
-
-	kapi "k8s.io/api/core/v1"
-	knet "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/util/sets"
-	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
-	ref "k8s.io/client-go/tools/reference"
-	"k8s.io/klog/v2"
-	utilnet "k8s.io/utils/net"
 )
 
 // CommonNetworkControllerInfo structure is place holder for all fields shared among controllers.
@@ -197,7 +197,38 @@ type BaseSecondaryNetworkController struct {
 }
 
 func (oc *BaseSecondaryNetworkController) Reconcile(netInfo util.NetInfo) error {
-	return util.ReconcileNetInfo(oc.ReconcilableNetInfo, netInfo)
+	reconcilePendingPods := !oc.ReconcilableNetInfo.EqualNADs(netInfo.GetNADs()...)
+	err := util.ReconcileNetInfo(oc.ReconcilableNetInfo, netInfo)
+	if err != nil {
+		return err
+	}
+	if reconcilePendingPods {
+		if err := ovnretry.RequeuePendingPods(oc.kube, oc.GetNetInfo(), oc.retryPods); err != nil {
+			klog.Errorf("Failed to requeue pending pods for network %s: %v", oc.GetNetworkName(), err)
+		}
+	}
+	return nil
+}
+
+func (oc *BaseSecondaryNetworkController) FilterOutResource(objType reflect.Type, obj interface{}) bool {
+	switch objType {
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			klog.Errorf("Failed to cast the provided object to a namespace")
+			return false
+		}
+		return !util.CanServeNamespace(oc.GetNetInfo(), ns.Name)
+	case factory.PodType:
+		pod, ok := obj.(*kapi.Pod)
+		if !ok {
+			klog.Errorf("Failed to cast the provided object to a pod")
+			return false
+		}
+		return !util.CanServeNamespace(oc.GetNetInfo(), pod.GetNamespace())
+	default:
+		return false
+	}
 }
 
 func getNetworkControllerName(netName string) string {
@@ -843,56 +874,18 @@ func (bnc *BaseNetworkController) isLocalZoneNode(node *kapi.Node) bool {
 	return util.GetNodeZone(node) == bnc.zone
 }
 
-// GetNetworkRole returns the role of this controller's
-// network for the given pod
-// Expected values are:
-// (1) "primary" if this network is the primary network of the pod.
-//
-//	The "default" network is the primary network of any pod usually
-//	unless user-defined-network-segmentation feature has been activated.
-//	If network segmentation feature is enabled then any user defined
-//	network can be the primary network of the pod.
-//
-// (2) "secondary" if this network is the secondary network of the pod.
-//
-//	Only user defined networks can be secondary networks for a pod.
-//
-// (3) "infrastructure-locked" is applicable only to "default" network if
-//
-//	a user defined network is the "primary" network for this pod. This
-//	signifies the "default" network is only used for probing and
-//	is otherwise locked for all intents and purposes.
-//
-// NOTE: Like in other places, expectation is this function is always called
-// from controller's that have some relation to the given pod, unrelated
-// networks are treated as secondary networks so caller has to be careful
+// GetNetworkRole returns the role of this controller's network for the given pod
 func (bnc *BaseNetworkController) GetNetworkRole(pod *kapi.Pod) (string, error) {
-	if !util.IsNetworkSegmentationSupportEnabled() {
-		// if user defined network segmentation is not enabled
-		// then we know pod's primary network is "default" and
-		// pod's secondary network is not its NOT primary network
-		if bnc.IsDefault() {
-			return types.NetworkRolePrimary, nil
-		}
-		return types.NetworkRoleSecondary, nil
-	}
-	activeNetwork, err := bnc.networkManager.GetActiveNetworkForNamespace(pod.Namespace)
+
+	role, err := util.GetNetworkRole(bnc.GetNetInfo(), bnc.networkManager.GetActiveNetworkForNamespace, pod)
 	if err != nil {
 		if util.IsUnprocessedActiveNetworkError(err) {
 			bnc.recordPodErrorEvent(pod, err)
 		}
 		return "", err
 	}
-	if activeNetwork.GetNetworkName() == bnc.GetNetworkName() {
-		return types.NetworkRolePrimary, nil
-	}
-	if bnc.IsDefault() {
-		// if default network was not the primary network,
-		// then when UDN is turned on, default network is the
-		// infrastructure-locked network forthis pod
-		return types.NetworkRoleInfrastructure, nil
-	}
-	return types.NetworkRoleSecondary, nil
+
+	return role, nil
 }
 
 func (bnc *BaseNetworkController) isLayer2Interconnect() bool {

@@ -156,6 +156,8 @@ func (wf *WatchFactory) ShallowClone() *WatchFactory {
 		ipamClaimsFactory:    wf.ipamClaimsFactory,
 		nadFactory:           wf.nadFactory,
 		udnFactory:           wf.udnFactory,
+		raFactory:            wf.raFactory,
+		frrFactory:           wf.frrFactory,
 		informers:            wf.informers,
 		stopChan:             wf.stopChan,
 
@@ -188,12 +190,16 @@ const (
 	defaultHandlerPriority int = 0
 	// lowest priority among various handlers (See GetHandlerPriority for more information)
 	minHandlerPriority int = 4
+
+	// used to determine if an internal informer has handlers attached to it or not
+	hasNoHandler uint32 = 0
+	hasHandler   uint32 = 1
 )
 
 var (
 	// Use a larger queue for incoming events to avoid bottlenecks
 	// due to handlers being slow.
-	eventQueueSize uint32 = 1000
+	eventQueueSize uint32 = 100
 )
 
 // Override default event queue configuration.  Used only for tests.
@@ -1293,6 +1299,12 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 	intInf.Lock()
 	defer intInf.Unlock()
 
+	// we are going to add a handler, we need to update the atomic signal that handlers exist now
+	// so that we do not miss events after we list current items.
+	// We need to do this after we get internal informer lock, to preserve that we can be the only one updating
+	// the atomic and preserve known state of the atomic while the handler is going to be added in the future
+	hadZeroHandlers := atomic.CompareAndSwapUint32(&intInf.hasHandlers, hasNoHandler, hasHandler)
+
 	items := make([]interface{}, 0)
 	for _, obj := range inf.inf.GetStore().List() {
 		if filterFunc(obj) {
@@ -1311,6 +1323,10 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 			return true, nil
 		})
 		if err != nil {
+			// handler is not going to be added, restore previous value if needed
+			if hadZeroHandlers {
+				atomic.StoreUint32(&intInf.hasHandlers, hasNoHandler)
+			}
 			return nil, err
 		}
 	}

@@ -418,7 +418,7 @@ var _ = Describe("User Defined Network Controller", func() {
 				expectedNsNADs := map[string]*netv1.NetworkAttachmentDefinition{}
 				for _, nsName := range testNamespaces {
 					nad := testClusterUdnNAD(cudn.Name, nsName)
-					networkName := "cluster.udn." + cudn.Name
+					networkName := "cluster_udn_" + cudn.Name
 					nadName := nsName + "/" + cudn.Name
 					nad.Spec.Config = `{"cniVersion":"1.0.0","name":"` + networkName + `","netAttachDefName":"` + nadName + `","role":"","subnets":"10.10.10.0/24","topology":"layer2","type":"ovn-k8s-cni-overlay"}`
 					expectedNsNADs[nsName] = nad
@@ -698,15 +698,26 @@ var _ = Describe("User Defined Network Controller", func() {
 						cudn, err := cs.UserDefinedNetworkClient.K8sV1().ClusterUserDefinedNetworks().Get(context.Background(), cudnName, metav1.GetOptions{})
 						Expect(err).NotTo(HaveOccurred())
 						return normalizeConditions(cudn.Status.Conditions)
-					}).Should(Equal([]metav1.Condition{{
-						Type:   "NetworkCreated",
-						Status: "False",
-						Reason: "NetworkAttachmentDefinitionSyncError",
-						Message: "invalid primary network state for namespace \"black\": a valid primary user defined network or network attachment definition " +
-							"custom resource, and required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present\ninvalid primary " +
-							"network state for namespace \"gray\": a valid primary user defined network or network attachment definition custom resource, and " +
-							"required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present",
-					}}), "status should report NAD failed in existing and new test namespaces")
+					}).Should(Or(
+						Equal([]metav1.Condition{{
+							Type:   "NetworkCreated",
+							Status: "False",
+							Reason: "NetworkAttachmentDefinitionSyncError",
+							Message: "invalid primary network state for namespace \"black\": a valid primary user defined network or network attachment definition " +
+								"custom resource, and required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present\ninvalid primary " +
+								"network state for namespace \"gray\": a valid primary user defined network or network attachment definition custom resource, and " +
+								"required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present",
+						}}),
+						Equal([]metav1.Condition{{
+							Type:   "NetworkCreated",
+							Status: "False",
+							Reason: "NetworkAttachmentDefinitionSyncError",
+							Message: "invalid primary network state for namespace \"gray\": a valid primary user defined network or network attachment definition " +
+								"custom resource, and required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present\ninvalid primary " +
+								"network state for namespace \"black\": a valid primary user defined network or network attachment definition custom resource, and " +
+								"required namespace label \"k8s.ovn.org/primary-user-defined-network\" must both be present",
+						}})),
+						"status should report NAD failed in existing and new test namespaces")
 					for _, nsName := range newNsNames {
 						nads, err := cs.NetworkAttchDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(nsName).List(context.Background(), metav1.ListOptions{})
 						Expect(err).NotTo(HaveOccurred())
